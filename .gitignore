@@ -1,1 +1,7 @@
-# Base técnica inicial. O código do conector será publicado apenas na branch preview/fast-replenishment.
+node_modules/
+.next/
+.vercel/
+.env
+.env.local
+.env.*.local
+coverage/
