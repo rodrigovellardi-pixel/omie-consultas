@@ -40,8 +40,13 @@ const EMPRESA_SCHEMA = z.preprocess((value) => {
 
 
 function companyCaller(empresa) {
-  return (operationName, params = {}, options = {}) =>
+  const caller = (operationName, params = {}, options = {}) =>
     callOmie(operationName, params, { ...options, empresa });
+  // Identifica o invólucro interno sem expor credenciais. As consultas de
+  // reposição usam esse sinal para aplicar a agregação rápida de vendas.
+  caller.__omieFastAggregation = true;
+  caller.__omieEmpresa = empresa;
+  return caller;
 }
 
 
