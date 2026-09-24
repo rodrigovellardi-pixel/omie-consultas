@@ -160,6 +160,7 @@ function round(value, digits = 3) {
 }
 
 function combinedTrend(d30, d60, d90) {
+  if (d30 === null || d30 === undefined) return "NAO_CALCULADA";
   if (d30 === 0 && d60 === 0 && d90 === 0) return "ESTAVEL";
   if (d30 >= d60 * 1.1 && d60 >= d90 * 1.1) return "ACELERANDO";
   if (d30 <= d60 * 0.9 && d60 <= d90 * 0.9) return "DESACELERANDO";
@@ -207,7 +208,7 @@ function consolidateReplenishment(result) {
     const media30 = product.venda_30d / 30;
     const media60 = product.venda_60d / 60;
     const media90 = product.venda_90d / 90;
-    const demandaBase = (media30 * 0.5) + (media60 * 0.3) + (media90 * 0.2);
+    const demandaBase = media60;
     const estoqueProjetado = estoqueFisico + product.estoque_em_transito;
     const coberturaFisica = demandaBase > 0 ? estoqueFisico / demandaBase : null;
     const coberturaProjetada = demandaBase > 0 ? estoqueProjetado / demandaBase : null;
@@ -226,7 +227,8 @@ function consolidateReplenishment(result) {
       media_dia_60d: round(media60),
       media_dia_90d: round(media90),
       media_dia_base: round(demandaBase),
-      tendencia: combinedTrend(media30, media60, media90),
+      tendencia: product.venda_30d > 0 ? combinedTrend(media30, media60, media90) : "NAO_CALCULADA",
+      criterio_demanda: "média diária oficial: venda líquida consolidada de 60 dias / 60",
       cobertura_fisica_dias: coberturaFisica === null ? null : round(coberturaFisica, 1),
       cobertura_projetada_dias: coberturaProjetada === null ? null : round(coberturaProjetada, 1),
       quantidade_sugerida_compra: quantidadeSugerida,
@@ -236,7 +238,7 @@ function consolidateReplenishment(result) {
   return {
     ...result,
     consolidado: {
-      criterio: "SKU por descrição e unidade; estoque físico soma MATRIZ + FILIAL. data_entrada nula é trânsito e não compõe o físico.",
+      criterio: "SKU por descrição e unidade; demanda oficial de 60 dias; estoque físico soma MATRIZ + FILIAL. data_entrada nula é trânsito e não compõe o físico.",
       dados_completos: dadosCompletos,
       quantidade_produtos: consolidated.length,
       produtos: consolidated
@@ -341,8 +343,8 @@ const mcpHandler = createMcpHandler(
           .describe("Lista de produtos/SKUs para uma única análise consolidada. O backend lê vendas uma vez por empresa e cruza os itens localmente."),
         data_referencia: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/).optional()
           .describe("Data-base no formato DD/MM/AAAA. Se omitida, usa hoje em America/Fortaleza."),
-        dias_historico: z.number().int().min(90).max(365).default(90)
-          .describe("Histórico de movimentos. Mínimo 90 dias para calcular as janelas de 30/60/90."),
+        dias_historico: z.number().int().min(60).max(365).default(60)
+          .describe("Compatibilidade de entrada; a reposição usa oficialmente vendas líquidas dos últimos 60 dias."),
         dias_cobertura_alvo: z.number().int().min(1).max(180).default(30)
           .describe("Cobertura desejada após considerar vendas e compras pendentes."),
         dias_lead_time: z.number().int().min(0).max(180).default(15)
@@ -572,8 +574,7 @@ function authorized(request) {
   const expected = process.env.MCP_ACCESS_TOKEN;
   if (!expected) return false;
   const bearer = request.headers.get("authorization");
-  const queryToken = new URL(request.url).searchParams.get("access_token");
-  return bearer === `Bearer ${expected}` || queryToken === expected;
+  return bearer === `Bearer ${expected}`;
 }
 
 

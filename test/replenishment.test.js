@@ -57,7 +57,7 @@ test("reposição encerra página vazia, preserva físico separado do trânsito 
   assert.equal(report.produtos[0].estoque.fisico, 30);
   assert.equal(report.produtos[0].estoque.faturada_em_transito, 12);
   assert.equal(report.produtos[0].estoque.projetado, 42);
-  assert.equal(report.produtos[0].quantidade_sugerida_caixas, 2);
+  assert.equal(report.produtos[0].quantidade_sugerida_caixas, 1);
   assert.equal(report.produtos[1].estoque.faturada_em_transito, 0);
   assert.equal(report.produtos[1].recomendacao_compra, "NAO_COMPRAR");
   assert.equal(calls.some(({ operation }) => operation === "listar_produtos_fornecedor"), false);
@@ -105,6 +105,10 @@ test("modo rápido varre vendas uma vez para vários SKUs e reaproveita a agrega
   assert.equal(second.produtos.length, 2);
   assert.equal(calls.filter((operation) => operation === "listar_pedidos_venda").length, 1);
   assert.equal(calls.includes("listar_movimentos_estoque"), false);
+  assert.equal(first.produtos[0].demanda_diaria_base, 0.5);
+  assert.equal(first.produtos[0].criterio_demanda, "média diária oficial: quantidade líquida faturada nos últimos 60 dias / 60");
+  assert.equal(first.dias_historico, 60);
+  assert.equal(first.fonte_vendas, "listar_produtos_vendidos_periodo");
 });
 
 test("busca multi-termo ignora termo sem cadastro sem invalidar produtos encontrados", async () => {
