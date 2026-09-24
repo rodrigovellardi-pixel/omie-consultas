@@ -331,8 +331,10 @@ const mcpHandler = createMcpHandler(
       "Analisa reposição e necessidade de compra em modo somente leitura. Calcula vendas líquidas faturadas em 30/60/90 dias somente para os SKUs encontrados, separa estoque físico de NF faturada em trânsito (data_entrada nula), calcula tendência, cobertura física/projetada e sugestão de compra. Use esta ferramenta para decisões de compra; não use somente o saldo de estoque.",
       {
         empresa: EMPRESA_SCHEMA,
-        termo: z.string().min(2)
-          .describe("Texto contido na descrição do produto, por exemplo Cobertop."),
+        termo: z.string().min(2).optional()
+          .describe("Texto contido na descrição do produto, por exemplo Cobertop. Use termo ou termos."),
+        termos: z.array(z.string().min(2)).min(1).max(50).optional()
+          .describe("Lista de produtos/SKUs para uma única análise consolidada. O backend lê vendas uma vez por empresa e cruza os itens localmente."),
         data_referencia: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/).optional()
           .describe("Data-base no formato DD/MM/AAAA. Se omitida, usa hoje em America/Fortaleza."),
         dias_historico: z.number().int().min(90).max(365).default(90)

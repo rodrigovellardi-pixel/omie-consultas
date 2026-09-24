@@ -97,7 +97,7 @@ test("modo rápido varre vendas uma vez para vários SKUs e reaproveita a agrega
   callFn.__omieFastAggregation = true;
   callFn.__omieEmpresa = "matriz";
 
-  const params = { termo: "Branco", data_referencia: "15/09/2026" };
+  const params = { termos: ["Ouro Branco", "Sonho de Valsa"], data_referencia: "15/09/2026" };
   const first = await analyzeProductReplenishment(params, callFn);
   const second = await analyzeProductReplenishment(params, callFn);
 
