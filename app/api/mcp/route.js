@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   analyzeProductReplenishment,
   callOmie,
+  createOmieTelemetry,
   countSalesOrdersByProject,
   dailyOpenFinancialMovements,
   dailyOpenReceivables,
@@ -35,31 +36,51 @@ const OMIE_READ_ONLY_ANNOTATIONS = Object.freeze({
 const EMPRESA_SCHEMA = z.preprocess((value) => {
   const normalized = String(value || "").trim().toLowerCase();
   return ({ consolidado: "ambas", matriz: "matriz", filial: "filial", ambas: "ambas" })[normalized] || value;
-}, z.enum(["matriz", "filial", "ambas"])) .default("matriz")
+}, z.enum(["matriz", "filial", "ambas"])) .default("ambas")
   .describe("Empresa consultada. Use ambas para pesquisar matriz e filial na mesma chamada.");
 
 
 function companyCaller(empresa) {
+  const telemetry = createOmieTelemetry(empresa);
   const caller = (operationName, params = {}, options = {}) =>
-    callOmie(operationName, params, { ...options, empresa });
+    callOmie(operationName, params, { ...options, empresa, telemetry });
   // Identifica o invólucro interno sem expor credenciais. As consultas de
   // reposição usam esse sinal para aplicar a agregação rápida de vendas.
   caller.__omieFastAggregation = true;
   caller.__omieEmpresa = empresa;
+  caller.__omieTelemetry = telemetry;
   return caller;
 }
 
 
 async function runByCompany(empresa, runner) {
-  if (empresa !== "ambas") return runner(companyCaller(empresa), empresa);
+  if (empresa !== "ambas") {
+    const caller = companyCaller(empresa);
+    const dados = await runner(caller, empresa);
+    if (!dados || typeof dados !== "object" || Array.isArray(dados)) return dados;
+    return {
+      ...dados,
+      diagnostico_omie: caller.__omieTelemetry.snapshot({ skus_processados: dados.produtos_analisados || dados.produtos?.length || 0 })
+    };
+  }
 
   const empresas = {};
   const erros_por_empresa = {};
-  for (const nome of ["matriz", "filial"]) {
+  const consultas = ["matriz", "filial"].map(async (nome) => {
+    const caller = companyCaller(nome);
     try {
-      empresas[nome] = await runner(companyCaller(nome), nome);
+      const dados = await runner(caller, nome);
+      return { nome, dados, diagnostico: caller.__omieTelemetry.snapshot({ skus_processados: dados?.produtos_analisados || dados?.produtos?.length || 0 }) };
     } catch (error) {
-      erros_por_empresa[nome] = error.message;
+      return { nome, erro: error.message, diagnostico: caller.__omieTelemetry.snapshot() };
+    }
+  });
+  const resultados = await Promise.all(consultas);
+  for (const resultado of resultados) {
+    if (resultado.erro) {
+      erros_por_empresa[resultado.nome] = resultado.erro;
+    } else {
+      empresas[resultado.nome] = resultado.dados;
     }
   }
 
@@ -69,13 +90,14 @@ async function runByCompany(empresa, runner) {
   return {
     escopo: "ambas",
     empresas,
+    diagnostico_omie: Object.fromEntries(resultados.map(({ nome, diagnostico }) => [nome, diagnostico])),
     ...(Object.keys(erros_por_empresa).length ? { erros_por_empresa } : {})
   };
 }
 
 
 async function scopedQuery(params, queryFn) {
-  const { empresa = "matriz", ...query } = params;
+  const { empresa = "ambas", ...query } = params;
   return runByCompany(empresa, (callFn) => queryFn(query, callFn));
 }
 
@@ -119,6 +141,101 @@ function consolidateProductStock(result) {
       criterio: "descrição e unidade iguais, sem diferenciar maiúsculas, minúsculas ou espaços nas pontas",
       quantidade_produtos: consolidated.size,
       produtos: [...consolidated.values()]
+    }
+  };
+}
+
+function asNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function round(value, digits = 3) {
+  const factor = 10 ** digits;
+  return Math.round((asNumber(value) + Number.EPSILON) * factor) / factor;
+}
+
+function combinedTrend(d30, d60, d90) {
+  if (d30 === 0 && d60 === 0 && d90 === 0) return "ESTAVEL";
+  if (d30 >= d60 * 1.1 && d60 >= d90 * 1.1) return "ACELERANDO";
+  if (d30 <= d60 * 0.9 && d60 <= d90 * 0.9) return "DESACELERANDO";
+  return "ESTAVEL";
+}
+
+// A ferramenta de reposição devolve também uma visão única por SKU. O modelo
+// não precisa somar empresas nem inferir a regra de trânsito fora do backend.
+function consolidateReplenishment(result) {
+  if (result?.escopo !== "ambas") return result;
+  const products = new Map();
+  const dadosCompletos = !result.erros_por_empresa && ["matriz", "filial"].every((empresa) => result.empresas?.[empresa]);
+  const parametros = Object.values(result.empresas || {}).find((value) => value?.parametros_reposicao)?.parametros_reposicao || {};
+
+  for (const empresa of ["matriz", "filial"]) {
+    for (const product of result.empresas?.[empresa]?.produtos || []) {
+      const key = normalizedProductKey(product);
+      const current = products.get(key) || {
+        produto: product.descricao,
+        sku: product.codigo,
+        unidade: product.unidade,
+        estoque_fisico_matriz: 0,
+        estoque_fisico_filial: 0,
+        estoque_em_transito: 0,
+        faturada_ainda_nao_recebida: 0,
+        venda_30d: 0,
+        venda_60d: 0,
+        venda_90d: 0,
+        empresas_presentes: []
+      };
+      const physical = asNumber(product.estoque?.fisico);
+      current[`estoque_fisico_${empresa}`] += physical;
+      current.estoque_em_transito += asNumber(product.estoque?.faturada_em_transito);
+      current.faturada_ainda_nao_recebida += asNumber(product.estoque?.faturada_em_transito);
+      current.venda_30d += asNumber(product.vendas?.ultimos_30_dias?.venda_liquida);
+      current.venda_60d += asNumber(product.vendas?.ultimos_60_dias?.venda_liquida);
+      current.venda_90d += asNumber(product.vendas?.ultimos_90_dias?.venda_liquida);
+      current.empresas_presentes.push(empresa);
+      products.set(key, current);
+    }
+  }
+
+  const consolidated = [...products.values()].map((product) => {
+    const estoqueFisico = product.estoque_fisico_matriz + product.estoque_fisico_filial;
+    const media30 = product.venda_30d / 30;
+    const media60 = product.venda_60d / 60;
+    const media90 = product.venda_90d / 90;
+    const demandaBase = (media30 * 0.5) + (media60 * 0.3) + (media90 * 0.2);
+    const estoqueProjetado = estoqueFisico + product.estoque_em_transito;
+    const coberturaFisica = demandaBase > 0 ? estoqueFisico / demandaBase : null;
+    const coberturaProjetada = demandaBase > 0 ? estoqueProjetado / demandaBase : null;
+    const coberturaAlvo = Math.max(asNumber(parametros.dias_cobertura_alvo), asNumber(parametros.dias_lead_time) + asNumber(parametros.dias_seguranca));
+    const quantidadeSugerida = dadosCompletos ? Math.max(Math.ceil((demandaBase * coberturaAlvo) - estoqueFisico - product.estoque_em_transito), 0) : null;
+    return {
+      ...product,
+      estoque_fisico_total_consolidado: round(estoqueFisico),
+      estoque_em_transito: round(product.estoque_em_transito),
+      faturada_ainda_nao_recebida: round(product.faturada_ainda_nao_recebida),
+      estoque_projetado: round(estoqueProjetado),
+      venda_30d: round(product.venda_30d),
+      venda_60d: round(product.venda_60d),
+      venda_90d: round(product.venda_90d),
+      media_dia_30d: round(media30),
+      media_dia_60d: round(media60),
+      media_dia_90d: round(media90),
+      media_dia_base: round(demandaBase),
+      tendencia: combinedTrend(media30, media60, media90),
+      cobertura_fisica_dias: coberturaFisica === null ? null : round(coberturaFisica, 1),
+      cobertura_projetada_dias: coberturaProjetada === null ? null : round(coberturaProjetada, 1),
+      quantidade_sugerida_compra: quantidadeSugerida,
+      recomendacao_compra: quantidadeSugerida === null ? "DADOS_INSUFICIENTES" : (quantidadeSugerida > 0 ? "COMPRAR" : "NAO_COMPRAR")
+    };
+  });
+  return {
+    ...result,
+    consolidado: {
+      criterio: "SKU por descrição e unidade; estoque físico soma MATRIZ + FILIAL. data_entrada nula é trânsito e não compõe o físico.",
+      dados_completos: dadosCompletos,
+      quantidade_produtos: consolidated.length,
+      produtos: consolidated
     }
   };
 }
@@ -234,7 +351,7 @@ const mcpHandler = createMcpHandler(
       OMIE_READ_ONLY_ANNOTATIONS,
       async (params) => {
         try {
-          const data = await scopedQuery(params, analyzeProductReplenishment);
+          const data = consolidateReplenishment(await scopedQuery(params, analyzeProductReplenishment));
           return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
         } catch (error) {
           return { content: [{ type: "text", text: error.message }], isError: true };

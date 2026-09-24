@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { callOmie } from "../lib/omie.js";
+import { callOmie, resetOmieRuntimeForTests } from "../lib/omie.js";
 
 
 test("seleciona credenciais da matriz e da filial sem misturá-las", async (t) => {
@@ -22,6 +22,7 @@ test("seleciona credenciais da matriz e da filial sem misturá-las", async (t) =
   };
 
   t.after(() => {
+    resetOmieRuntimeForTests();
     globalThis.fetch = originalFetch;
     for (const key of Object.keys(process.env)) {
       if (!(key in originalEnv)) delete process.env[key];
@@ -52,6 +53,7 @@ test("mantém matriz como padrão para compatibilidade com a Alexa", async (t) =
   };
 
   t.after(() => {
+    resetOmieRuntimeForTests();
     globalThis.fetch = originalFetch;
     for (const key of Object.keys(process.env)) {
       if (!(key in originalEnv)) delete process.env[key];
@@ -61,4 +63,32 @@ test("mantém matriz como padrão para compatibilidade com a Alexa", async (t) =
 
   await callOmie("listar_produtos", {}, { maxAttempts: 1 });
   assert.equal(requestBody.app_key, "matriz-key");
+});
+
+
+test("coalesce chamadas iguais simultâneas e reutiliza a resposta recente", async (t) => {
+  resetOmieRuntimeForTests();
+  const originalFetch = globalThis.fetch;
+  const originalEnv = { ...process.env };
+  let requests = 0;
+  process.env.OMIE_APP_KEY = "matriz-key";
+  process.env.OMIE_APP_SECRET = "matriz-secret";
+  globalThis.fetch = async () => {
+    requests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return new Response(JSON.stringify({ total_de_paginas: 1, produto_servico_cadastro: [] }), { status: 200 });
+  };
+  t.after(() => {
+    resetOmieRuntimeForTests();
+    globalThis.fetch = originalFetch;
+    for (const key of Object.keys(process.env)) if (!(key in originalEnv)) delete process.env[key];
+    Object.assign(process.env, originalEnv);
+  });
+
+  await Promise.all([
+    callOmie("listar_produtos", { filtrar_apenas_descricao: "%Ouro Branco%" }, { maxAttempts: 1 }),
+    callOmie("listar_produtos", { filtrar_apenas_descricao: "%Ouro Branco%" }, { maxAttempts: 1 })
+  ]);
+  await callOmie("listar_produtos", { filtrar_apenas_descricao: "%Ouro Branco%" }, { maxAttempts: 1 });
+  assert.equal(requests, 1);
 });
