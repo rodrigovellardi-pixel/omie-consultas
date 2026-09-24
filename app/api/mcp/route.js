@@ -66,16 +66,20 @@ async function runByCompany(empresa, runner) {
 
   const empresas = {};
   const erros_por_empresa = {};
-  const consultas = ["matriz", "filial"].map(async (nome) => {
+  const resultados = [];
+  // O Omie identifica como redundantes requisições iguais enviadas quase ao
+  // mesmo tempo, mesmo quando pertencem a empresas diferentes. Executar o
+  // lote completo de cada empresa em sequência evita alternar as mesmas
+  // páginas de Matriz e Filial e mantém a consolidação dentro do backend.
+  for (const nome of ["matriz", "filial"]) {
     const caller = companyCaller(nome);
     try {
       const dados = await runner(caller, nome);
-      return { nome, dados, diagnostico: caller.__omieTelemetry.snapshot({ skus_processados: dados?.produtos_analisados || dados?.produtos?.length || 0 }) };
+      resultados.push({ nome, dados, diagnostico: caller.__omieTelemetry.snapshot({ skus_processados: dados?.produtos_analisados || dados?.produtos?.length || 0 }) });
     } catch (error) {
-      return { nome, erro: error.message, diagnostico: caller.__omieTelemetry.snapshot() };
+      resultados.push({ nome, erro: error.message, diagnostico: caller.__omieTelemetry.snapshot() });
     }
-  });
-  const resultados = await Promise.all(consultas);
+  }
   for (const resultado of resultados) {
     if (resultado.erro) {
       erros_por_empresa[resultado.nome] = resultado.erro;
