@@ -106,3 +106,42 @@ test("modo rápido varre vendas uma vez para vários SKUs e reaproveita a agrega
   assert.equal(calls.filter((operation) => operation === "listar_pedidos_venda").length, 1);
   assert.equal(calls.includes("listar_movimentos_estoque"), false);
 });
+
+test("busca multi-termo ignora termo sem cadastro sem invalidar produtos encontrados", async () => {
+  resetOmieRuntimeForTests();
+  const callFn = async (operation, params) => {
+    if (operation === "listar_produtos") {
+      if (params.filtrar_apenas_descricao.includes("INEXISTENTE")) {
+        throw new Error("ERROR: Não existem registros para a página [1]!");
+      }
+      return {
+        total_de_paginas: 1,
+        produto_servico_cadastro: [
+          { codigo_produto: 1, codigo: "OB", descricao: "Ouro Branco", unidade: "UN", inativo: "N" }
+        ]
+      };
+    }
+    if (operation === "listar_posicao_estoque") return {
+      nTotPaginas: 1,
+      produtos: [{ nCodProd: 1, codigo_local_estoque: 1, fisico: 10, reservado: 0, nSaldo: 10 }]
+    };
+    if (operation === "listar_pedidos_venda") return {
+      total_de_paginas: 1,
+      total_de_registros: 0,
+      pedido_venda_produto: []
+    };
+    if (operation === "listar_saldo_pendente") return { total_de_paginas: 1, saldo_pendente_lista: [] };
+    if (operation === "listar_locais_estoque") return { nTotPaginas: 1, locaisEncontrados: [] };
+    throw new Error(`operação inesperada: ${operation}`);
+  };
+  callFn.__omieFastAggregation = true;
+  callFn.__omieEmpresa = "matriz";
+
+  const report = await analyzeProductReplenishment({
+    termos: ["OURO BRANCO", "INEXISTENTE"],
+    data_referencia: "15/09/2026"
+  }, callFn);
+
+  assert.equal(report.produtos.length, 1);
+  assert.equal(report.produtos[0].descricao, "Ouro Branco");
+});
