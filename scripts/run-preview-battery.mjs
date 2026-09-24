@@ -49,11 +49,29 @@ async function runCase(termos) {
   return { termos, duracao_ms: Math.round(performance.now() - started), empresas: companies };
 }
 
-const cases = [];
-for (const termos of CASES) cases.push(await runCase(termos));
+function compact(result) {
+  return {
+    termos: result.termos,
+    duracao_ms: result.duracao_ms,
+    empresas: result.empresas.map((item) => ({
+      empresa: item.empresa,
+      ok: item.ok,
+      erro: item.erro || null,
+      produtos: item.produtos || 0,
+      transito_total: item.transito_total || 0,
+      chamadas_omie: item.diagnostico.chamadas_omie,
+      cache_hits: item.diagnostico.cache_hits,
+      cache_misses: item.diagnostico.cache_misses,
+      cache_stale_hits: item.diagnostico.cache_stale_hits,
+      chamadas_coalescidas: item.diagnostico.chamadas_coalescidas,
+      retries: item.diagnostico.retries,
+      rate_limits: item.diagnostico.rate_limits
+    }))
+  };
+}
 
-console.info(`PREVIEW_BATTERY_RESULT ${JSON.stringify({
-  only_preview: true,
-  cases,
-  finished_at: new Date().toISOString()
-})}`);
+for (let index = 0; index < CASES.length; index += 1) {
+  const result = compact(await runCase(CASES[index]));
+  console.info(`PREVIEW_BATTERY_CASE ${JSON.stringify({ indice: index + 1, ...result })}`);
+}
+console.info("PREVIEW_BATTERY_COMPLETE");
